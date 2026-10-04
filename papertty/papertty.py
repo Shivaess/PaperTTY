@@ -41,8 +41,11 @@ import click
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps
 # for tidy driver list
 from collections import OrderedDict
-# for VNC
-from vncdotool import api
+# for VNC (optional - only needed by the 'vnc' command)
+try:
+    from vncdotool import api
+except ImportError:
+    api = None
 # for reading stdin data for use with Pillow
 from io import BytesIO
 
