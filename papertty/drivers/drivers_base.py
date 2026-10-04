@@ -69,11 +69,15 @@ class SpiDev:
             return self.spi.readbytes(n)
 
     def setSpeed(self, hz):
-        if not self.gpiozero:
+        if self.gpiozero:
+            self.spi._spi.rate = hz
+        else:
             self.spi.max_speed_hz = hz
 
     def setMode(self, mode):
-        if not self.gpiozero:
+        if self.gpiozero:
+            self.spi._spi.clock_mode = mode
+        else:
             self.spi.mode = mode
 
     def setNoCs(self, value):

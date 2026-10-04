@@ -15,6 +15,7 @@
 #     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import atexit
+import threading
 from abc import abstractmethod
 
 from papertty.drivers.drivers_base import WaveshareEPD
@@ -635,73 +636,127 @@ class EPD7in5v2(WaveshareFull):
     def __init__(self):
         super().__init__(name='7.5" v2 (GDEW075T7) BW', width=800, height=480)
 
+    PARTIAL_OUT = 0x92
+    PARTIAL_IN = 0x91
+    PARTIAL_WINDOW = 0x90
+    # Partial refreshes slowly accumulate ghosting; clean up with a full refresh this often
+    FULL_REFRESH_EVERY = 50
+    # Deep sleep the panel after this many seconds without updates
+    IDLE_SLEEP_S = 60
+
     def init(self, **kwargs):
         if self.epd_init() != 0:
             return -1
-        atexit.register(self.power_off)
-        self.init_panel()
+        self.SPI.setSpeed(4000000)
+        self.needs_full = True
+        self.partial_count = 0
+        self.lock = threading.Lock()
+        self.idle_timer = None
+        atexit.register(self.shutdown)
+        print('Init finished.')
 
-    def init_panel(self):
-        """Register init, mirroring Waveshare's current epd7in5_V2.py"""
+    def init_fast(self):
+        """Fast full refresh mode (~1.5 s), from Waveshare's epd7in5_V2.py init_fast()"""
         self.reset()
-
-        self.send_command(self.BOOSTER_SOFT_START)
-        self.send_data(0x17)
-        self.send_data(0x17)
-        self.send_data(0x28)
-        self.send_data(0x17)
-
-        self.send_command(self.POWER_SETTING)
-        self.send_data(0x07) # VDS_EN, VDG_EN
-        self.send_data(0x07) # VGH=20V, VGL=-20V
-        self.send_data(0x28) # VDH=15V
-        self.send_data(0x17) # VDL=-15V
-
-        self.send_command(self.POWER_ON)
-        self.delay_ms(100)
-        self.wait_until_idle()
-
         self.send_command(self.PANEL_SETTING)
         self.send_data(0x1f) # KW-3f   KWR-2F        BWROTP 0f       BWOTP 1f
-
-        self.send_command(self.TCON_RESOLUTION)
-        self.send_data(self.width >> 8)
-        self.send_data(self.width & 0xff)
-        self.send_data(self.height >> 8)
-        self.send_data(self.height & 0xff)
-
-        self.send_command(0x15)
-        self.send_data(0x00)
-
         self.send_command(self.VCOM_AND_DATA_INTERVAL_SETTING)
         self.send_data(0x10)
         self.send_data(0x07)
+        self.send_command(self.POWER_ON)
+        self.wait_until_idle()
+        self.send_command(self.BOOSTER_SOFT_START)
+        for v in (0x27, 0x27, 0x18, 0x17):
+            self.send_data(v)
+        self.send_command(0xE0) # cascade setting: use temperature from 0xE5
+        self.send_data(0x02)
+        self.send_command(0xE5) # force temperature
+        self.send_data(0x5A)
 
-        self.send_command(self.TCON_SETTING)
-        self.send_data(0x22)
-        self.asleep = False
-
-        print('Init finished.')
+    def init_part(self):
+        """Partial refresh mode (~0.5 s), from Waveshare's epd7in5_V2.py init_part()"""
+        self.reset()
+        self.send_command(self.PANEL_SETTING)
+        self.send_data(0x1f)
+        self.send_command(self.POWER_ON)
+        self.wait_until_idle()
+        self.send_command(0xE0)
+        self.send_data(0x02)
+        self.send_command(0xE5)
+        self.send_data(0x6E)
 
     def display_frame(self, frame_buffer, *args):
-        if frame_buffer:
-            size = int(self.width * self.height / 8)
-            self.send_command(self.DATA_START_TRANSMISSION_1)
-            self.send_data_multi([0xFF] * size)
-            self.send_command(self.DATA_START_TRANSMISSION_2)
-            self.send_data_multi([~b & 0xFF for b in frame_buffer[:size]])
+        """Full refresh; frame_buffer is 1 = white, MSB first"""
+        self.send_command(self.DATA_START_TRANSMISSION_1)
+        self.send_data_multi(frame_buffer)
+        self.send_command(self.DATA_START_TRANSMISSION_2)
+        self.send_data_multi([~b & 0xFF for b in frame_buffer])
+        self.send_command(self.DISPLAY_REFRESH)
+        self.delay_ms(10)
+        self.wait_until_idle()
 
-            self.send_command(self.DISPLAY_REFRESH)
-            self.delay_ms(100)
-            self.wait_until_idle()
+    def display_partial(self, frame_buffer):
+        """Partial refresh of the whole screen; the controller keeps the previous frame in RAM"""
+        self.send_command(self.VCOM_AND_DATA_INTERVAL_SETTING)
+        self.send_data(0xA9)
+        self.send_data(0x07)
+        self.send_command(self.PARTIAL_IN)
+        self.send_command(self.PARTIAL_WINDOW)
+        for v in (0, self.width - 1):
+            self.send_data(v >> 8)
+            self.send_data(v & 0xff)
+        for v in (0, self.height - 1):
+            self.send_data(v >> 8)
+            self.send_data(v & 0xff)
+        self.send_data(0x01)
+        self.send_command(self.DATA_START_TRANSMISSION_2)
+        self.send_data_multi(frame_buffer)
+        self.send_command(self.DISPLAY_REFRESH)
+        self.delay_ms(10)
+        self.wait_until_idle()
+        self.send_command(self.PARTIAL_OUT)
 
     def draw(self, x, y, image):
-        """Wake the panel, refresh, then put it back to deep sleep so it isn't left energized"""
-        if self.asleep:
-            self.init_panel()
+        """Refresh the whole screen (partially when possible) and switch the panel's
+        high voltage off afterwards, so it isn't left energized between updates"""
         # '1' mode packs MSB-first with 1 = white, same layout as get_frame_buffer() but much faster
-        self.display_frame(list(image.convert('1').tobytes()))
-        self.sleep()
+        frame_buffer = list(image.convert('1').tobytes())
+        if self.idle_timer:
+            self.idle_timer.cancel()
+        with self.lock:
+            self._draw(frame_buffer)
+        self.idle_timer = threading.Timer(self.IDLE_SLEEP_S, self.idle_sleep)
+        self.idle_timer.daemon = True
+        self.idle_timer.start()
+
+    def _draw(self, frame_buffer):
+        if self.needs_full or self.partial_count >= self.FULL_REFRESH_EVERY:
+            self.init_fast()
+            self.display_frame(frame_buffer)
+            self.init_part()
+            self.needs_full = False
+            self.partial_count = 0
+        else:
+            self.send_command(self.POWER_ON)
+            self.wait_until_idle()
+            self.display_partial(frame_buffer)
+            self.partial_count += 1
+        self.send_command(self.POWER_OFF)
+        self.wait_until_idle()
+
+    def idle_sleep(self):
+        with self.lock:
+            if not self.needs_full:
+                self.sleep()
+
+    def shutdown(self):
+        """Deep sleep and cut panel power on exit"""
+        if self.idle_timer:
+            self.idle_timer.cancel()
+        with self.lock:
+            self.sleep()
+        self.delay_ms(2000)
+        self.power_off()
 
     def sleep(self):
         '''
@@ -719,7 +774,7 @@ class EPD7in5v2(WaveshareFull):
         self.wait_until_idle()
         self.send_command(self.DEEP_SLEEP)
         self.send_data(0xA5)
-        self.asleep = True
+        self.needs_full = True
 
     def reset(self):
         """
@@ -734,15 +789,12 @@ class EPD7in5v2(WaveshareFull):
         e.g. significantly different delay times:
         https://github.com/waveshare/e-Paper/blob/702def06bcb75983c98b0f9d25d43c552c248eb0/RaspberryPi%26JetsonNano/python/lib/waveshare_epd/epd1in54c.py#L46-L52
         """
-        # Deliberately importing here to achieve same fail-on-use import behaviour as in `drivers_base.py`
-        import RPi.GPIO as GPIO
-
-        self.digital_write(self.RST_PIN, GPIO.HIGH)
-        self.delay_ms(200)
-        self.digital_write(self.RST_PIN, GPIO.LOW)
+        self.digital_write(self.RST_PIN, 1)
+        self.delay_ms(20)
+        self.digital_write(self.RST_PIN, 0)
         self.delay_ms(2)
-        self.digital_write(self.RST_PIN, GPIO.HIGH)
-        self.delay_ms(200)
+        self.digital_write(self.RST_PIN, 1)
+        self.delay_ms(20)
 
     def wait_until_idle(self):
         """
