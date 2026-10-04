@@ -652,6 +652,7 @@ class EPD7in5v2(WaveshareFull):
         self.partial_count = 0
         self.lock = threading.Lock()
         self.idle_timer = None
+        self.last_frame = None
         atexit.register(self.shutdown)
         print('Init finished.')
 
@@ -730,6 +731,7 @@ class EPD7in5v2(WaveshareFull):
         self.idle_timer.start()
 
     def _draw(self, frame_buffer):
+        self.last_frame = frame_buffer
         if self.needs_full or self.partial_count >= self.FULL_REFRESH_EVERY:
             self.init_fast()
             self.display_frame(frame_buffer)
@@ -746,8 +748,13 @@ class EPD7in5v2(WaveshareFull):
 
     def idle_sleep(self):
         with self.lock:
-            if not self.needs_full:
-                self.sleep()
+            if self.needs_full:
+                return
+            # clear partial-refresh ghosting before the image is left on screen
+            if self.partial_count and self.last_frame:
+                self.init_fast()
+                self.display_frame(self.last_frame)
+            self.sleep()
 
     def shutdown(self):
         """Deep sleep and cut panel power on exit"""

@@ -63,6 +63,7 @@ class PaperTTY:
     fontsize = None
     font_height = None
     font_width = None
+    font_width_exact = None
     white = None
     black = None
     encoding = None
@@ -231,7 +232,10 @@ class PaperTTY:
         """Load the PIL or TrueType font"""
         # get physical dimensions of font. Take the average width of
         # 1000 M's because oblique fonts a complicated.
-        self.font_width = font.getsize('M' * 1000)[0] // 1000
+        line_width = font.getsize('M' * 1000)[0]
+        self.font_width = line_width // 1000
+        # text is drawn a line at a time, so fit() needs the fractional advance
+        self.font_width_exact = line_width / 1000
         if 'getmetrics' in dir(font):
             metrics_ascent, metrics_descent = font.getmetrics()
             self.spacing = int(self.spacing) if self.spacing != 'auto' else (metrics_descent - 2)
@@ -254,7 +258,7 @@ class PaperTTY:
 
     def fit(self, portrait=False):
         """Return the maximum columns and rows we can display with this font"""
-        width = self.font_width
+        width = self.font_width_exact
         height = self.font_height
         # hacky, subtract just a bit to avoid going over the border with small fonts
         pw = self.driver.width - 3
