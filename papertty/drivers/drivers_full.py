@@ -14,6 +14,7 @@
 #     You should have received a copy of the GNU General Public License
 #     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import atexit
 from abc import abstractmethod
 
 from papertty.drivers.drivers_base import WaveshareEPD
@@ -627,7 +628,7 @@ class EPD7in5v2(WaveshareFull):
     READ_VCOM_VALUE = 0x81
     # REVISION = 0x70
     # SPI_FLASH_CONTROL = 0x65
-    # TCON_RESOLUTION = 0x61
+    TCON_RESOLUTION = 0x61
     TEMPERATURE_CALIBRATION = 0x41 # Assuming TEMPERATURE_SENSOR_SELECTION
     VCM_DC_SETTING = 0x82
 
@@ -637,19 +638,37 @@ class EPD7in5v2(WaveshareFull):
     def init(self, **kwargs):
         if self.epd_init() != 0:
             return -1
+        atexit.register(self.power_off)
+        self.init_panel()
+
+    def init_panel(self):
+        """Register init, mirroring Waveshare's current epd7in5_V2.py"""
         self.reset()
+
+        self.send_command(self.BOOSTER_SOFT_START)
+        self.send_data(0x17)
+        self.send_data(0x17)
+        self.send_data(0x28)
+        self.send_data(0x17)
 
         self.send_command(self.POWER_SETTING)
         self.send_data(0x07) # VDS_EN, VDG_EN
-        self.send_data(0x07) # VCOM_HV, VGHL_LV[1], VGHL_LV[0]
-        self.send_data(0x3f) # VDH
-        self.send_data(0x3f) # VDL
+        self.send_data(0x07) # VGH=20V, VGL=-20V
+        self.send_data(0x28) # VDH=15V
+        self.send_data(0x17) # VDL=-15V
 
         self.send_command(self.POWER_ON)
+        self.delay_ms(100)
         self.wait_until_idle()
 
         self.send_command(self.PANEL_SETTING)
         self.send_data(0x1f) # KW-3f   KWR-2F        BWROTP 0f       BWOTP 1f
+
+        self.send_command(self.TCON_RESOLUTION)
+        self.send_data(self.width >> 8)
+        self.send_data(self.width & 0xff)
+        self.send_data(self.height >> 8)
+        self.send_data(self.height & 0xff)
 
         self.send_command(0x15)
         self.send_data(0x00)
@@ -660,25 +679,29 @@ class EPD7in5v2(WaveshareFull):
 
         self.send_command(self.TCON_SETTING)
         self.send_data(0x22)
+        self.asleep = False
 
         print('Init finished.')
 
     def display_frame(self, frame_buffer, *args):
         if frame_buffer:
+            size = int(self.width * self.height / 8)
             self.send_command(self.DATA_START_TRANSMISSION_1)
-            self.delay_ms(2)
-            for i in range(0, int(self.width * self.height / 8)):
-                self.send_data(0xFF)
-            self.delay_ms(2)
+            self.send_data_multi([0xFF] * size)
             self.send_command(self.DATA_START_TRANSMISSION_2)
-            self.delay_ms(2)
-            for i in range(0, int(self.width * self.height / 8)):
-                self.send_data(~frame_buffer[i])
-            self.delay_ms(2)
+            self.send_data_multi([~b & 0xFF for b in frame_buffer[:size]])
 
             self.send_command(self.DISPLAY_REFRESH)
             self.delay_ms(100)
             self.wait_until_idle()
+
+    def draw(self, x, y, image):
+        """Wake the panel, refresh, then put it back to deep sleep so it isn't left energized"""
+        if self.asleep:
+            self.init_panel()
+        # '1' mode packs MSB-first with 1 = white, same layout as get_frame_buffer() but much faster
+        self.display_frame(list(image.convert('1').tobytes()))
+        self.sleep()
 
     def sleep(self):
         '''
@@ -690,10 +713,13 @@ class EPD7in5v2(WaveshareFull):
         You can use Epd::Reset() to awaken or Epd::Init() to initialize
         '''
 
+        self.send_command(self.VCOM_AND_DATA_INTERVAL_SETTING)
+        self.send_data(0xF7)
         self.send_command(self.POWER_OFF)
         self.wait_until_idle()
         self.send_command(self.DEEP_SLEEP)
         self.send_data(0xA5)
+        self.asleep = True
 
     def reset(self):
         """

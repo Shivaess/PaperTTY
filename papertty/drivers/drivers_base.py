@@ -269,6 +269,8 @@ class WaveshareEPD(DisplayDriver):
     DC_PIN = 25
     CS_PIN = 8
     BUSY_PIN = 24
+    # Driver HAT Rev2.3+ switches panel power via a MOSFET on this pin
+    PWR_PIN = 18
 
     # Some models implement rotation in their code
     ROTATE_0 = 0x00
@@ -310,7 +312,16 @@ class WaveshareEPD(DisplayDriver):
             GPIO.setup(self.DC_PIN, GPIO.OUT)
         GPIO.setup(self.CS_PIN, GPIO.OUT)
         GPIO.setup(self.BUSY_PIN, GPIO.IN)
+        GPIO.setup(self.PWR_PIN, GPIO.OUT)
+        self.power_on()
         return 0
+
+    def power_on(self):
+        self.digital_write(self.PWR_PIN, GPIO.HIGH)
+        self.delay_ms(10)
+
+    def power_off(self):
+        self.digital_write(self.PWR_PIN, GPIO.LOW)
 
     # Basic functionality
 
