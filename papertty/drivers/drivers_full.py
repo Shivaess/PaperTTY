@@ -643,6 +643,8 @@ class EPD7in5v2(WaveshareFull):
     FULL_REFRESH_EVERY = 50
     # Deep sleep the panel after this many seconds without updates
     IDLE_SLEEP_S = 60
+    # Waveshare advises refreshing at least every 24 h; redraw a static screen this often
+    KEEPALIVE_REFRESH_S = 12 * 3600
 
     def init(self, **kwargs):
         if self.epd_init() != 0:
@@ -652,6 +654,7 @@ class EPD7in5v2(WaveshareFull):
         self.partial_count = 0
         self.lock = threading.Lock()
         self.idle_timer = None
+        self.draw_gen = 0
         self.last_frame = None
         atexit.register(self.shutdown)
         print('Init finished.')
@@ -725,8 +728,13 @@ class EPD7in5v2(WaveshareFull):
         if self.idle_timer:
             self.idle_timer.cancel()
         with self.lock:
+            self.draw_gen += 1
             self._draw(frame_buffer)
-        self.idle_timer = threading.Timer(self.IDLE_SLEEP_S, self.idle_sleep)
+        self._schedule(self.IDLE_SLEEP_S, self.idle_sleep)
+
+    def _schedule(self, delay, fn):
+        # timers carry the draw generation, so one firing after a newer draw does nothing
+        self.idle_timer = threading.Timer(delay, fn, args=(self.draw_gen,))
         self.idle_timer.daemon = True
         self.idle_timer.start()
 
@@ -746,15 +754,27 @@ class EPD7in5v2(WaveshareFull):
         self.send_command(self.POWER_OFF)
         self.wait_until_idle()
 
-    def idle_sleep(self):
+    def idle_sleep(self, gen):
         with self.lock:
-            if self.needs_full:
+            if gen != self.draw_gen or self.needs_full:
                 return
             # clear partial-refresh ghosting before the image is left on screen
             if self.partial_count and self.last_frame:
                 self.init_fast()
                 self.display_frame(self.last_frame)
             self.sleep()
+            self._schedule(self.KEEPALIVE_REFRESH_S, self.keepalive_refresh)
+
+    def keepalive_refresh(self, gen):
+        """Wake from deep sleep and redraw the same image, then sleep again"""
+        with self.lock:
+            if gen != self.draw_gen or not self.last_frame:
+                return
+            print('Keepalive refresh')
+            self.init_fast()
+            self.display_frame(self.last_frame)
+            self.sleep()
+            self._schedule(self.KEEPALIVE_REFRESH_S, self.keepalive_refresh)
 
     def shutdown(self):
         """Deep sleep and cut panel power on exit"""
