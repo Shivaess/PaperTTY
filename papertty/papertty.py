@@ -274,8 +274,9 @@ class PaperTTY:
         cur_width = width - 1
         # get font height
         height = self.font_height
-        # starting X is the font width times current column
-        start_x = cur_x * width
+        # starting X is the font width times current column; use the exact
+        # advance since text is drawn a line at a time
+        start_x = round(cur_x * self.font_width_exact)
         offset = 0
         if self.cursor != 'default': # only default and a number are valid in this context
             offset = int(self.cursor)
@@ -286,11 +287,10 @@ class PaperTTY:
 
     def draw_block_cursor(self, cursor, image):
         cur_x, cur_y = cursor[0], cursor[1]
-        width = self.font_width
         # get font height
         height = self.font_height
-        upper_left = (cur_x * width, cur_y * height)
-        lower_right = ((cur_x + 1) * width, (cur_y + 1) * height)
+        upper_left = (round(cur_x * self.font_width_exact), cur_y * height)
+        lower_right = (round((cur_x + 1) * self.font_width_exact), (cur_y + 1) * height)
         mask = Image.new('1', (image.width, image.height), self.black)
         draw = ImageDraw.Draw(mask)
         draw.rectangle([upper_left, lower_right], fill=self.white)
