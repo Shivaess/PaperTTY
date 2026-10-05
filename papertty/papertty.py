@@ -19,6 +19,7 @@ import papertty.drivers.drivers_color as drivers_color
 import papertty.drivers.drivers_colordraw as drivers_colordraw
 import papertty.drivers.driver_it8951 as driver_it8951
 import papertty.drivers.drivers_4in2 as driver_4in2
+from papertty import hotkeys as hotkeys_mod
 
 # for ioctl
 import fcntl
@@ -26,6 +27,7 @@ import fcntl
 import os
 # for gracefully handling signals (systemd service)
 import signal
+import subprocess
 # for unpacking virtual console data
 import struct
 # for stdin and exit
@@ -1295,9 +1297,11 @@ def fb(settings, fb_num, rotate, invert, sleep, fullevery):
 @click.option('--disable_a2', is_flag=True, default=False, help='Disable fast A2 panel refresh for black and white images')
 @click.option('--disable_1bpp', is_flag=True, default=False, help='Disable fast 1bpp mode')
 @click.option('--mhz', default=None, help='Set SPI speed in MHz')
+@click.option('--hotkeys', is_flag=True, default=False,
+              help='Ctrl+Alt+Up/Down/C/R/H for font size, clear, rotate and help (needs root)')
 @click.pass_obj
 def terminal(settings, vcsa, font, fontsize, noclear, nocursor, cursor, sleep, ttyrows, ttycols, portrait, flipx, flipy,
-             spacing, apply_scrub, autofit, attributes, interactive, vcom, disable_a2, disable_1bpp, mhz):
+             spacing, apply_scrub, autofit, attributes, interactive, vcom, disable_a2, disable_1bpp, mhz, hotkeys):
     """Display virtual console on an e-Paper display, exit with Ctrl-C."""
     settings.args['font'] = font
     settings.args['fontsize'] = fontsize
@@ -1337,6 +1341,14 @@ def terminal(settings, vcsa, font, fontsize, noclear, nocursor, cursor, sleep, t
         settings.args['cursor'] = None
     else:
         settings.args['cursor'] = cursor
+
+    if hotkeys:
+        state = hotkeys_mod.load_state()
+        if 'fontsize' in state:
+            settings.args['fontsize'] = state['fontsize']
+        portrait = state.get('portrait', portrait)
+        if state:
+            print('Restored hotkey settings: {}'.format(state))
 
     ptty = settings.get_init_tty()
 
@@ -1386,7 +1398,63 @@ def terminal(settings, vcsa, font, fontsize, noclear, nocursor, cursor, sleep, t
         else:
             print("Started displaying {}, minimum update interval {} s, exit with Ctrl-C".format(vcsa, sleep))
         character_width, vcsudev = ptty.vcsudev(vcsa)
+
+        def autofit_tty():
+            if autofit:
+                max_dim = ptty.fit(textargs['portrait'])
+                print("Automatic resize of TTY to {} rows, {} columns".format(max_dim[1], max_dim[0]))
+                ptty.set_tty_size(ptty.ttydev(vcsa), max_dim[1], max_dim[0])
+
+        listener = None
+        help_since = None  # monotonic time the help screen went up, or None
+        if hotkeys:
+            hotkeys_mod.void_console_combos(ptty.ttydev(vcsa))
+            listener = hotkeys_mod.HotkeyListener()
+            listener.start()
+            # boot reminder
+            help_since = time.monotonic()
+            ptty.showtext(help_text(ptty, listener, textargs, booting=True), fill=ptty.black, **textargs)
+
         while True:
+            if listener:
+                redraw = False
+                for action in listener.pop_actions():
+                    if action == 'help':
+                        if help_since is None:
+                            help_since = time.monotonic()
+                            ptty.showtext(help_text(ptty, listener, textargs), fill=ptty.black, **textargs)
+                            continue
+                    elif action in ('bigger', 'smaller') and ptty.is_truetype:
+                        new_size = ptty.fontsize + (2 if action == 'bigger' else -2)
+                        ptty.fontsize = max(HOTKEY_MIN_FONT, min(HOTKEY_MAX_FONT, new_size))
+                        ptty.spacing = spacing
+                        ptty.font = ptty.load_font(path=None)
+                        print('Font size {}'.format(ptty.fontsize))
+                        autofit_tty()
+                    elif action == 'rotate':
+                        textargs['portrait'] = not textargs['portrait']
+                        autofit_tty()
+                    elif action == 'clear':
+                        if hasattr(ptty.driver, 'needs_full'):
+                            ptty.driver.needs_full = True
+                        else:
+                            flags['scrub_requested'] = True
+                    help_since = None
+                    redraw = True
+                    if action != 'clear':
+                        hotkeys_mod.save_state(fontsize=ptty.fontsize, portrait=textargs['portrait'])
+                if help_since is not None:
+                    # any key or timeout closes the help screen
+                    if listener.last_key_time > help_since or time.monotonic() - help_since > HELP_TIMEOUT_S:
+                        help_since = None
+                        redraw = True
+                    else:
+                        time.sleep(float(sleep))
+                        continue
+                if redraw:
+                    oldimage = None
+                    oldbuff = None
+
             if flags['show_menu']:
                 flags['show_menu'] = False
                 print()
@@ -1499,6 +1567,43 @@ def terminal(settings, vcsa, font, fontsize, noclear, nocursor, cursor, sleep, t
                     else:
                         # delay before next update check
                         time.sleep(float(sleep))
+
+
+HOTKEY_MIN_FONT = 10
+HOTKEY_MAX_FONT = 48
+HELP_TIMEOUT_S = 30
+
+
+def help_text(ptty, listener, textargs, booting=False):
+    """Hotkey reminder plus some diagnostics, kept narrow to fit large fonts"""
+    w, h = (ptty.driver.width, ptty.driver.height) if textargs['portrait'] else (ptty.driver.height, ptty.driver.width)
+    cols, rows = ptty.fit(textargs['portrait'])
+    lines = ['PaperTTY' + (' starting' if booting else ' help'), ''] + hotkeys_mod.HELP_LINES + ['']
+    lines.append('Font: {} {}'.format(os.path.splitext(os.path.basename(ptty.fontfile))[0], ptty.fontsize))
+    lines.append('Size: {}x{} {}'.format(cols, rows, 'landscape' if w > h else 'portrait'))
+    lines.append('Display: {}'.format(type(ptty.driver).__name__))
+    if hasattr(ptty.driver, 'partial_count'):
+        lines.append('Partials since full: {}'.format(ptty.driver.partial_count))
+    try:
+        with open('/sys/class/thermal/thermal_zone0/temp') as f:
+            lines.append('CPU: {:.1f} C'.format(int(f.read()) / 1000))
+    except (OSError, ValueError):
+        pass
+    try:
+        with open('/proc/uptime') as f:
+            mins = int(float(f.read().split()[0])) // 60
+        lines.append('Uptime: {}h {:02d}m'.format(mins // 60, mins % 60))
+    except (OSError, ValueError):
+        pass
+    try:
+        ips = subprocess.run(['hostname', '-I'], capture_output=True, text=True, timeout=2).stdout.split()
+        lines.append('IP: {}'.format(ips[0] if ips else 'none'))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    keyboards = listener.keyboard_names()
+    lines.append('Keyboard: {}'.format(keyboards[0] if keyboards else 'not found'))
+    lines += ['', 'Any key closes this']
+    return '\n'.join(lines)
 
 
 # add all the CLI commands
