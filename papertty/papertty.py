@@ -1365,11 +1365,18 @@ def terminal(settings, vcsa, font, fontsize, noclear, nocursor, cursor, sleep, t
         if not interactive:
             print("Exiting (SIGINT)...")
             if not noclear:
-                ptty.showtext(oldbuff, fill=ptty.white, **textargs)
+                ptty.showtext(oldbuff or "", fill=ptty.white, **textargs)
             sys.exit(0)
         else:
              print('Showing menu, please wait ...')
              flags['show_menu'] = True
+
+    # SIGTERM comes from shutdown's final kill or a plain `kill`: blank and exit too
+    def sigterm_handler(sig, frame):
+        print("Exiting (SIGTERM)...")
+        if not noclear:
+            ptty.showtext(oldbuff or "", fill=ptty.white, **textargs)
+        sys.exit(0)
 
     # toggle scrub flag when SIGUSR1 received
     def sigusr1_handler(sig, frame):
@@ -1378,6 +1385,7 @@ def terminal(settings, vcsa, font, fontsize, noclear, nocursor, cursor, sleep, t
 
     signal.signal(signal.SIGINT, sigint_handler)
     signal.signal(signal.SIGUSR1, sigusr1_handler)
+    signal.signal(signal.SIGTERM, sigterm_handler)
 
     # group the various params for readability
     textargs = {'portrait': portrait, 'flipx': flipx, 'flipy': flipy}
@@ -1473,7 +1481,7 @@ def terminal(settings, vcsa, font, fontsize, noclear, nocursor, cursor, sleep, t
                 ch = sys.stdin.readline().strip()
                 if ch == 'x':
                     if not noclear:
-                        ptty.showtext(oldbuff, fill=ptty.white, **textargs)
+                        ptty.showtext(oldbuff or "", fill=ptty.white, **textargs)
                     sys.exit(0)
                 elif ch == 'f':
                     print('Current font: {}'.format(ptty.fontfile))
