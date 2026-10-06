@@ -1358,25 +1358,21 @@ def terminal(settings, vcsa, font, fontsize, noclear, nocursor, cursor, sleep, t
     oldimage = None
     oldcursor = None
     # dirty - should refactor to make this cleaner
-    flags = {'scrub_requested': False, 'show_menu': False, 'clear': False}
-    
+    flags = {'scrub_requested': False, 'show_menu': False, 'clear': False, 'exit': None}
+
+    # Handlers only set flags: they run in the main thread, possibly mid-draw while the
+    # driver holds its lock, so drawing from here could deadlock or interleave SPI traffic.
     # handle SIGINT from `systemctl stop` and Ctrl-C
     def sigint_handler(sig, frame):
         if not interactive:
-            print("Exiting (SIGINT)...")
-            if not noclear:
-                ptty.showtext(oldbuff or "", fill=ptty.white, **textargs)
-            sys.exit(0)
+            flags['exit'] = 'SIGINT'
         else:
              print('Showing menu, please wait ...')
              flags['show_menu'] = True
 
     # SIGTERM comes from shutdown's final kill or a plain `kill`: blank and exit too
     def sigterm_handler(sig, frame):
-        print("Exiting (SIGTERM)...")
-        if not noclear:
-            ptty.showtext(oldbuff or "", fill=ptty.white, **textargs)
-        sys.exit(0)
+        flags['exit'] = 'SIGTERM'
 
     # toggle scrub flag when SIGUSR1 received
     def sigusr1_handler(sig, frame):
@@ -1424,6 +1420,11 @@ def terminal(settings, vcsa, font, fontsize, noclear, nocursor, cursor, sleep, t
             ptty.showtext(help_text(ptty, listener, textargs, booting=True), fill=ptty.black, **textargs)
 
         while True:
+            if flags['exit']:
+                print("Exiting ({})...".format(flags['exit']))
+                if not noclear:
+                    ptty.showtext(oldbuff or "", fill=ptty.white, **textargs)
+                sys.exit(0)
             if listener:
                 redraw = False
                 for action in listener.pop_actions():
