@@ -1,63 +1,98 @@
 # PaperTTY
 
+> **This is a fork of [joukos/PaperTTY](https://github.com/joukos/PaperTTY)** focused on using a Waveshare 7.5" V2 e-paper display as the screen of a Raspberry Pi 400 "e-ink laptop". See the [changelog](CHANGELOG.md) for what changed.
+
 ## Overview
 
-PaperTTY is a simple Python module for using affordable SPI e-ink displays as a computer monitor, with a Raspberry Pi being the typical computer interfacing with the display. Most of the tested displays are Waveshare branded, but also others - particularly ones using the IT8951 controller - might work.
+PaperTTY is a Python module for using SPI e-ink displays as a computer monitor, with a Raspberry Pi driving the display. Most supported displays are Waveshare branded; displays with the IT8951 controller are supported too.
 
-Things it can display on the e-ink:
-| Subcommand | Description                             |
-| ---------- | --------------------------------------- |
-| `fb`       | Framebuffer (`/dev/fbX`)                |
-| `terminal` | Linux virtual console (`/dev/vcs[au]X`) |
-| `vnc`      | VNC desktop                             |
-| `image`    | Image files                             |
-| `stdin`    | Standard input                          |
+Subcommands (`papertty --driver X <subcommand>`):
 
-To use any feature, you need to select an appropriate driver for your e-ink display as a top-level option (`papertty --driver X ...`). To see the list of drivers, use `papertty list`.
+| Subcommand | Description                             | Status in this fork |
+| ---------- | --------------------------------------- | ------------------- |
+| `terminal` | Linux virtual console (`/dev/vcs[au]X`) | Tested daily        |
+| `image`    | Image files                             | Untested            |
+| `stdin`    | Standard input                          | Untested            |
+| `fb`       | Framebuffer (`/dev/fbX`)                | Untested            |
+| `vnc`      | VNC desktop                             | Untested; needs the optional `vncdotool` package |
+| `scrub`    | Clear the display                       | Untested            |
+| `list`     | List display drivers                    | Works               |
 
-To see help for individual subcommands, use `--help` with them, ie. `papertty --driver X --terminal --help`.
+Only the `EPD7in5v2` driver has been tested in this fork, on this setup:
+
+- Raspberry Pi 400, Raspberry Pi OS (Debian 13 "trixie"), Python 3.13
+- Waveshare 7.5" V2 (800x480, black/white) on the e-Paper Driver HAT **Rev2.3**
+
+The other drivers are unchanged from upstream.
+
+### What this fork adds for the 7.5" V2
+
+- Driver HAT Rev2.3 support (its PWR pin must be driven high)
+- Fast full refresh (~2 s) and partial refresh (~0.8 s) instead of ~4.5 s per update
+- Panel care: high voltage off after every update, a full refresh every 50 partial ones and before deep sleep after 60 s idle, a refresh every 12 h while asleep, and a full-quality white clear on exit or shutdown
+- `terminal --hotkeys`: Ctrl+Alt+Up/Down (font size), R (rotate), C (clear ghosting), H (help and status). Font size and rotation are remembered.
+- Fixes: autofit no longer clips the last column, the cursor no longer drifts left with fractional-width fonts, and Pillow 10+ works
 
 ## Usage
 
-PaperTTY is currently packaged using Poetry, however it can be installed via pip too. The instructions here are for Raspberry Pi (please open an issue if you need support for another platform).
+**Enable SPI first:** `sudo raspi-config` → `Interface Options` → `SPI` → `Yes`, then reboot.
 
-**You need to enable SPI first:**
-- `sudo raspi-config`
-  - `Interfacing Options -> SPI -> Yes`
-- May want to reboot just in case
+### Install (tested)
 
-**Then, you also need some system dependencies:**
-
-- `sudo apt install python3-venv python3-pip libopenjp2-7 libtiff5-dev libjpeg-dev libfreetype-dev`
-
-### Install with pip to virtualenv
-
-If you just want it installed as packaged in PyPi (if you need to modify something use the Poetry way instead - also note that it is possible for the package in PyPi to not match the latest source):
+This fork runs from source on the system Python with Debian packages, with no virtualenv:
 
 ```bash
-python3 -m venv papertty_venv
-source papertty_venv/bin/activate
-pip install papertty
-papertty_venv/bin/papertty --help
-```
-
-### Install with Poetry
-
-The "correct" way to set up PaperTTY is using Poetry. This gives you the most flexibility and handles the virtualenv creation automatically. Sometimes with VNC issues one may need to downgrade `vncdotool` to `0.13.0`, too, which is not as easy with the pip method.
-
-**First you need to install Poetry, refer to their [instructions](https://python-poetry.org/docs/#installation).**
-
-Then:
-
-```bash
-git clone https://github.com/joukos/PaperTTY.git
+sudo apt install git python3-pil python3-click python3-spidev python3-gpiozero python3-lgpio fonts-dejavu-mono
+git clone https://github.com/Shivaess/PaperTTY.git
 cd PaperTTY
-poetry install  # if you change something with the deps, do a `poetry update`
-poetry run papertty --help
+python3 -c "from papertty.papertty import cli; cli()" --help
 ```
 
-To get a direct path for the script (which will be run in the virtual environment with all the dependencies), run in the directory: `echo $(poetry env info -p)/bin/papertty`. Append any options you need and this is what you want to start in a SystemD unit or so, possibly with `sudo` depending on the OS configuration and the feature you wish to use.
+Show the first console on the 7.5" V2 (run as root for GPIO, SPI, the console and the keyboard):
 
+```bash
+sudo python3 -c "from papertty.papertty import cli; cli()" --driver EPD7in5v2 terminal \
+    --font /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf --size 20 --autofit --portrait --hotkeys
+```
+
+On this panel `--portrait` gives landscape, because the panel is natively 800x480. To see help for a subcommand, use `--driver X <subcommand> --help`.
+
+### Start at boot
+
+`/etc/systemd/system/papertty.service` (adjust `WorkingDirectory`):
+
+```ini
+[Unit]
+Description=PaperTTY
+DefaultDependencies=no
+After=local-fs.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=simple
+KillSignal=SIGINT
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+WorkingDirectory=/home/pi/PaperTTY
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -c "from papertty.papertty import cli; cli()" --driver EPD7in5v2 terminal --font /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf --size 20 --autofit --portrait --hotkeys
+
+[Install]
+WantedBy=sysinit.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now papertty
+```
+
+`Conflicts=`/`Before=shutdown.target` matter: without them the service isn't stopped at shutdown, and the display is left showing the shutdown messages.
+
+### pip / Poetry (upstream instructions, untested here)
+
+Upstream publishes `papertty` on PyPI and uses Poetry. Neither includes this fork's changes, and `pyproject.toml` still pins Pillow 7.1.2, which doesn't build on current Python. Use the source install above instead.
 
 **The rest of this page has not been updated but is left as reference until a more holistic documentation update is actually done. If you have any issues, please search the existing issues and create a new one if necessary. joukos/2022-01-17**
 
