@@ -85,6 +85,20 @@ pip3 install papertty
 
 ----
 
+## 7.5" V2 and hotkeys update *(2026-10-06)*
+
+- **EPD7in5v2** works with the Waveshare Driver HAT Rev2.3 (which needs its PWR pin driven high) and uses Waveshare's fast full refresh (~2 s) and partial refresh (~0.8 s). A full refresh runs every 50 partial ones and before the panel deep sleeps after 60 s idle; a sleeping panel is refreshed every 12 h, and exit wipes it with the standard (cleanest) waveform.
+- **`terminal --hotkeys`** reads the keyboard directly (needs root) and adds:
+
+  Keys | Action
+  --- | ---
+  Ctrl+Alt+Up / Down | Font size +/- 2 (re-fits the terminal with `--autofit`)
+  Ctrl+Alt+R | Toggle portrait / landscape
+  Ctrl+Alt+C | Force a full refresh to clear ghosting
+  Ctrl+Alt+H | Show shortcuts and status (font, size, temperature, IP, uptime); any key closes it
+
+  The combos are mapped to nothing in the console keymap so they don't reach the terminal. The help screen is shown once at start, and font size and rotation are saved to `/var/lib/papertty/hotkeys.json`.
+
 ## Image display command
 
 @colin-nolan has contributed a subcommand to display image files on the screen, allowing to test the displays or easily make a photo slideshow or similar. Try `image --help` to check it out.
@@ -406,6 +420,7 @@ If you're going to use `terminal` with a display that doesn't support partial re
 - **`SIGINT`** - stop and clear the screen (unless `--noclear` was given), same as pressing Ctrl-C
     - `sudo pkill -INT -f papertty.py`
     - By default, the `systemd` service unit attempts to stop the process using SIGINT
+- **`SIGTERM`** - same as `SIGINT` (e.g. the final kill at shutdown)
 - **`SIGUSR1`** - apply scrub and keep running
     - `sudo pkill -USR1 -f papertty.py`
 
@@ -430,6 +445,7 @@ Option | Description | Default
 `--vcom` | Set the VCOM value of the panel. Entered as positive value x 1000. eg. 1460 = -1.46V | *no default*
 `--disable_a2` | Disable fast A2 panel refresh for black and white images | disabled
 `--disable_1bpp` | Disable fast 1bpp mode | disabled
+`--hotkeys` | Ctrl+Alt keyboard shortcuts for font size, rotate, clear and help (needs root) | disabled
 
 
 ```sh

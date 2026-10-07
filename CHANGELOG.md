@@ -1,5 +1,13 @@
 # Changelog
 
+- **2026-10-06**
+  - EPD7in5v2: Driver HAT Rev2.3 support (PWR pin), fast full and partial refresh,
+    deep sleep when idle, 12 h keepalive refresh, full-quality clear on exit.
+  - `terminal --hotkeys`: Ctrl+Alt shortcuts for font size, rotation, clear and help;
+    font size and rotation persist across restarts.
+  - Autofit and cursor position use the exact glyph width (fixes a clipped last
+    column and a cursor that drifted left).
+  - Clear the screen on SIGTERM too; bundled service unit is now stopped at shutdown.
 - **2020-03-01**
   - Added partial refresh support for 4.2".
 - **2020-02-18**

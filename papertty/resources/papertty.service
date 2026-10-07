@@ -1,11 +1,15 @@
 [Unit]
 Description=PaperTTY
 DefaultDependencies=no
+# DefaultDependencies=no drops these implicit ones; without them the service isn't
+# stopped at shutdown and gets killed before it can clear the display
+Conflicts=shutdown.target
+Before=shutdown.target
 
 [Service]
 Type=simple
 KillSignal=SIGINT
-TimeoutStopSec=8
+TimeoutStopSec=20
 Restart=on-failure
 
 ### Change the paths below to match yours
