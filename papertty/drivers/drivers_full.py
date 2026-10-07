@@ -659,6 +659,39 @@ class EPD7in5v2(WaveshareFull):
         atexit.register(self.shutdown)
         print('Init finished.')
 
+    def init_full(self):
+        """Standard full refresh (~4 s, flashes), from Waveshare's epd7in5_V2.py init().
+        Slowest but cleanest: uses the panel's own temperature-compensated waveform"""
+        self.reset()
+        self.send_command(self.BOOSTER_SOFT_START)
+        for v in (0x17, 0x17, 0x28, 0x17):
+            self.send_data(v)
+        self.send_command(self.POWER_ON)
+        self.delay_ms(100)
+        self.wait_until_idle()
+        self.send_command(self.PANEL_SETTING)
+        self.send_data(0x1F)
+        self.send_command(self.TCON_RESOLUTION)
+        for v in (self.width >> 8, self.width & 0xff, self.height >> 8, self.height & 0xff):
+            self.send_data(v)
+        self.send_command(0x15) # dual SPI off
+        self.send_data(0x00)
+        self.send_command(self.VCOM_AND_DATA_INTERVAL_SETTING)
+        self.send_data(0x10)
+        self.send_data(0x07)
+        self.send_command(0x60) # TCON setting
+        self.send_data(0x22)
+
+    def clear_full(self):
+        """Wipe to white with the standard waveform so no ghost is left behind, then sleep"""
+        if self.idle_timer:
+            self.idle_timer.cancel()
+        with self.lock:
+            self.draw_gen += 1
+            self.init_full()
+            self.display_frame([0xFF] * (self.width * self.height // 8))
+            self.sleep()
+
     def init_fast(self):
         """Fast full refresh mode (~1.5 s), from Waveshare's epd7in5_V2.py init_fast()"""
         self.reset()
@@ -781,7 +814,8 @@ class EPD7in5v2(WaveshareFull):
         if self.idle_timer:
             self.idle_timer.cancel()
         with self.lock:
-            self.sleep()
+            if not self.needs_full:  # otherwise already asleep
+                self.sleep()
         self.delay_ms(2000)
         self.power_off()
 

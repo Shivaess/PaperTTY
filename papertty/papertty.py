@@ -1423,7 +1423,10 @@ def terminal(settings, vcsa, font, fontsize, noclear, nocursor, cursor, sleep, t
             if flags['exit']:
                 print("Exiting ({})...".format(flags['exit']))
                 if not noclear:
-                    ptty.showtext(oldbuff or "", fill=ptty.white, **textargs)
+                    if hasattr(ptty.driver, 'clear_full'):
+                        ptty.driver.clear_full()
+                    else:
+                        ptty.showtext(oldbuff or "", fill=ptty.white, **textargs)
                 sys.exit(0)
             if listener:
                 redraw = False
